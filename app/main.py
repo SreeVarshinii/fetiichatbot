@@ -1,4 +1,4 @@
-# main.py  (Streamlit Cloud + MySQL friendly)
+# main.py  (Streamlit Cloud + PostgreSQL friendly)
 import os
 import io
 import json
@@ -18,31 +18,31 @@ except Exception:
     BASE_SYSTEM_PROMPT = "You are a helpful SQL analyst."
 
 # ---------------------------
-# Helpers
+# Helpers (PostgreSQL)
 # ---------------------------
-def force_pymysql(url: str) -> str:
-    """Normalize driver to mysql+pymysql for SQLAlchemy."""
-    if url.startswith("mysql://"):
-        return url.replace("mysql://", "mysql+pymysql://", 1)
-    if url.startswith("mysql+mysqldb://"):
-        return url.replace("mysql+mysqldb://", "mysql+pymysql://", 1)
+def force_psycopg_v3(url: str) -> str:
+    """Normalize driver to postgresql+psycopg (psycopg3) for SQLAlchemy."""
+    if url.startswith("postgresql+psycopg2://"):
+        return url.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
 
-def ensure_query_param(db_url: str, key: str, value: str) -> str:
-    """Ensure ?key=value is present once in the URL."""
+def ensure_sslmode_require(db_url: str) -> str:
+    """Append sslmode=require if not already present (needed by Neon/most managed PG)."""
     if not db_url:
         return db_url
     parsed = urlparse(db_url)
     qs = parse_qs(parsed.query)
-    if key not in qs:
-        qs[key] = [value]
+    if "sslmode" not in qs:
+        qs["sslmode"] = ["require"]
         new_q = urlencode(qs, doseq=True)
         db_url = urlunparse(parsed._replace(query=new_q))
     return db_url
 
 @st.cache_resource(show_spinner=False)
 def get_db(db_url: str) -> SQLDatabase:
-    # Small, resilient pool fits serverless DBs + Streamlit Cloud
+    # Small, resilient pool fits serverless PG + Streamlit Cloud
     return SQLDatabase.from_uri(
         db_url,
         include_tables=["trips", "riders"],
@@ -64,7 +64,7 @@ def get_llm(model_id: str, api_key: str) -> ChatGoogleGenerativeAI:
     )
 
 def make_agent(llm: ChatGoogleGenerativeAI, db: SQLDatabase):
-    # Extend the base system prompt to ask for structured JSON when possible.
+    # Ask the model to return structured JSON the app can render
     RENDER_GUIDE = """
 Return ONE of these JSON shapes when presenting results:
 
@@ -87,13 +87,14 @@ If unsure, reply with {"type":"markdown","markdown":"..."}.
         handle_parsing_errors=True,  # avoid hard failures on tool output parsing
     )
 
-def health_check(db: SQLDatabase) -> bool:
+def health_check_verbose(db: SQLDatabase) -> tuple[bool, str | None]:
+    """Return (ok, err_text). Shows the real reason for connection failure."""
     try:
-        with db._engine.connect() as conn:  # direct SQLAlchemy check
+        with db._engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1;")
-        return True
-    except Exception:
-        return False
+        return True, None
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 # ---------- Rendering ----------
 def render_llm_payload(payload: dict):
@@ -154,8 +155,8 @@ def try_render(answer: str, prefer_structured: bool):
 # ---------------------------
 # App Config / Secrets
 # ---------------------------
-st.set_page_config(page_title="Fetii Data Chat (MySQL)", layout="wide")
-st.title("🗄️ Fetii Data Chat — MySQL + LangChain SQL Agent")
+st.set_page_config(page_title="Fetii Data Chat (PostgreSQL)", layout="wide")
+st.title("🗄️ Fetii Data Chat — PostgreSQL + LangChain SQL Agent")
 st.markdown("Chat with your Fetii rideshare data 🚐✨")
 
 # Prefer Streamlit secrets on Cloud, fallback to env for local dev
@@ -173,11 +174,11 @@ if not DATABASE_URL:
     st.error("Missing DATABASE_URL. Add it in Streamlit Secrets.")
     st.stop()
 
-# Normalize DB URL for MySQL + sensible defaults
+# Normalize DB URL for PostgreSQL + SSL (e.g., Neon)
 # Examples:
-#   mysql+pymysql://user:pass@host:3306/dbname
-DATABASE_URL = force_pymysql(DATABASE_URL)
-DATABASE_URL = ensure_query_param(DATABASE_URL, "charset", "utf8mb4")
+#   postgresql+psycopg://user:pass@host:5432/dbname?sslmode=require
+DATABASE_URL = force_psycopg_v3(DATABASE_URL)
+DATABASE_URL = ensure_sslmode_require(DATABASE_URL)
 
 # Init resources
 llm = get_llm(MODEL_ID, GOOGLE_API_KEY)
@@ -195,8 +196,10 @@ if "history" not in st.session_state:
 # ---------------------------
 with st.sidebar:
     st.subheader("Status")
-    ok = health_check(db)
+    ok, err = health_check_verbose(db)
     st.write("Database:", "✅ Connected" if ok else "❌ Not reachable")
+    if not ok and err:
+        st.error(err)  # shows the real error to help fix URL/creds/SSL quickly
     st.caption("💬 Type a question and get instant insights.")
 
     show_sql = st.toggle("Show SQL / traces", value=False)
