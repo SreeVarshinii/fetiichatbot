@@ -66,7 +66,8 @@ def make_agent(llm: ChatGoogleGenerativeAI, db: SQLDatabase):
         db=db,
         verbose=True,
         system_message=SYSTEM_PROMPT,
-        return_intermediate_steps=True,  # capture SQL/tool traces
+        return_intermediate_steps=True, 
+        handle_parsing_errors=True # capture SQL/tool traces
     )
 
 
