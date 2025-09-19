@@ -127,14 +127,14 @@ with left_col:
     st.title("🚐 Fetii Data Chat")
     st.caption("Ask questions about trips & riders. The agent writes SQL for you.")
 
-with right_col:
-    st.subheader("Status")
-    if not GOOGLE_API_KEY:
-        st.error("Missing GOOGLE_API_KEY. Add it in Streamlit Secrets.")
-        st.stop()
-    if not DATABASE_URL:
-        st.error("Missing DATABASE_URL. Add it in Streamlit Secrets.")
-        st.stop()
+# with right_col:
+#     st.subheader("Status")
+#     if not GOOGLE_API_KEY:
+#         st.error("Missing GOOGLE_API_KEY. Add it in Streamlit Secrets.")
+#         st.stop()
+#     if not DATABASE_URL:
+#         st.error("Missing DATABASE_URL. Add it in Streamlit Secrets.")
+#         st.stop()
 
 # Normalize DB URL for Neon + SSL
 DATABASE_URL = ensure_sslmode_require(force_psycopg_v3(DATABASE_URL))
