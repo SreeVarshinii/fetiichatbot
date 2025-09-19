@@ -5,77 +5,96 @@ from sqlalchemy import create_engine, text
 DB_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://fetii:fetii@db:5432/fetii")
 engine = create_engine(DB_URL, future=True)
 
-FETII_XLSX = os.getenv("FETII_XLSX", "/data/FetiiAI_Data_Austin.xlsx")
-TRIPS_CSV   = os.getenv("FETII_TRIPS_CSV")     # optional override
-RIDERS_CSV  = os.getenv("FETII_RIDERS_CSV")
-DEMO_CSV    = os.getenv("FETII_DEMO_CSV")
+# CSV paths (override with env vars)
+TRIPS_CSV = os.getenv("FETII_TRIPS_CSV", "/data/Trip_data_extensive.csv")
+USERS_CSV = os.getenv("FETII_USERS_CSV", "/data/User_extensive.csv")
 
-def pick_sheet(xls, candidates):
-    for name in xls.sheet_names:
-        ln = name.lower().strip()
-        if any(k in ln for k in candidates):
-            return name
-    return xls.sheet_names[0]
-
-def normalize_trips(df):
+def normalize_trips(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Trip_data_extensive.csv into trips table schema."""
     m = {}
     for c in df.columns:
         lc = c.lower().strip()
-        if lc in ["trip id","tripid","trip_id"]: m[c] = "trip_id"
-        elif lc in ["user id of booker","user_id_booker","booker","booker_user_id"]: m[c] = "user_id_booker"
-        elif "pickup" in lc and "address" in lc: m[c] = "pickup_address"
-        elif ("drop" in lc or "dropoff" in lc) and "address" in lc: m[c] = "dropoff_address"
-        elif "pickup" in lc and "lat" in lc: m[c] = "pickup_lat"
-        elif "pickup" in lc and ("lon" in lc or "long" in lc): m[c] = "pickup_lon"
-        elif "drop" in lc and "lat" in lc: m[c] = "dropoff_lat"
-        elif "drop" in lc and ("lon" in lc or "long" in lc): m[c] = "dropoff_lon"
-        elif "timestamp" in lc or "pickup time" in lc: m[c] = "pickup_ts"
-        elif "drop" in lc and "time" in lc: m[c] = "dropoff_ts"
-        elif lc in ["ridercount","num riders","number of riders","passenger count"]: m[c] = "rider_count"
-    return df.rename(columns=m)
+        if lc == "trip id": m[c] = "trip_id"
+        elif lc in ["booking user id"]: m[c] = "user_id_booker"
+        elif "pick up latitude" in lc: m[c] = "pickup_lat"
+        elif "pick up longitude" in lc: m[c] = "pickup_lon"
+        elif "drop off latitude" in lc: m[c] = "dropoff_lat"
+        elif "drop off longitude" in lc: m[c] = "dropoff_lon"
+        elif "pick up address" in lc: m[c] = "pickup_address"
+        elif "drop off address" in lc: m[c] = "dropoff_address"
+        elif "trip date and time" in lc: m[c] = "pickup_ts"
+        elif "total passengers" in lc: m[c] = "rider_count"
+        elif lc == "pickup_place": m[c] = "pickup_place"
+        elif lc == "pickup_street": m[c] = "pickup_street"
+        elif lc == "drop_off_place": m[c] = "dropoff_place"
+        elif lc == "drop_off_street": m[c] = "dropoff_street"
+        elif lc == "date": m[c] = "date"
+        elif lc == "time": m[c] = "time"
+        elif lc == "day": m[c] = "day"
+
+    out = df.rename(columns=m).copy()
+
+    # Parse timestamp and derive date/time/day if missing
+    if "pickup_ts" in out.columns:
+        out["pickup_ts"] = pd.to_datetime(out["pickup_ts"], errors="coerce")
+        if "date" not in out.columns:
+            out["date"] = out["pickup_ts"].dt.date
+        if "time" not in out.columns:
+            out["time"] = out["pickup_ts"].dt.strftime("%H:%M:%S")
+        if "day" not in out.columns:
+            out["day"] = out["pickup_ts"].dt.day_name()
+
+    # Convert numeric fields
+    for col in ["rider_count", "pickup_lat", "pickup_lon", "dropoff_lat", "dropoff_lon"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    return out
+
+def normalize_users(df: pd.DataFrame):
+    """Split User_extensive.csv into riders and demo tables if possible."""
+    lower = {c.lower().strip(): c for c in df.columns}
+    tcol = next((lower[k] for k in ["trip id","tripid","trip_id"] if k in lower), None)
+    ucol = next((lower[k] for k in ["user id","userid","user_id"] if k in lower), None)
+
+    riders, demo = None, None
+
+    if tcol and ucol:
+        riders = df.rename(columns={tcol:"trip_id", ucol:"user_id"})[["trip_id","user_id"]].copy()
+
+    # look for age or other demographics
+    # agecol = next((c for c in df.columns if "age" in c.lower()), None)
+    # if ucol and agecol:
+    #     demo = df.rename(columns={ucol:"user_id", agecol:"age"})[["user_id","age"]].copy()
+    #     demo["age"] = pd.to_numeric(demo["age"], errors="coerce")
+
+    return riders
 
 def load_frames():
-    if TRIPS_CSV and RIDERS_CSV and DEMO_CSV:
-        trips  = pd.read_csv(TRIPS_CSV)
-        riders = pd.read_csv(RIDERS_CSV)
-        demo   = pd.read_csv(DEMO_CSV)
-    else:
-        xls = pd.ExcelFile(FETII_XLSX)
-        trip_sheet  = pick_sheet(xls, ["trip"])
-        rider_sheet = pick_sheet(xls, ["rider","passenger"])
-        demo_sheet  = pick_sheet(xls, ["demo","age"])
-        trips  = pd.read_excel(xls, sheet_name=trip_sheet)
-        riders = pd.read_excel(xls, sheet_name=rider_sheet)
-        demo   = pd.read_excel(xls, sheet_name=demo_sheet)
+    trips_raw = pd.read_csv(TRIPS_CSV)
+    users_raw = pd.read_csv(USERS_CSV)
 
-    trips = normalize_trips(trips)
+    trips = normalize_trips(trips_raw)
+    riders = normalize_users(users_raw)
 
-    # riders: map to trip_id, user_id
-    def map_cols(df, trip_keys, user_keys):
-        lower = {c.lower().strip(): c for c in df.columns}
-        tcol = next((lower[k] for k in trip_keys if k in lower), df.columns[0])
-        ucol = next((lower[k] for k in user_keys if k in lower), df.columns[1])
-        return df.rename(columns={tcol:"trip_id", ucol:"user_id"})
+    return trips, riders
 
-    riders = map_cols(riders, {"trip id","tripid","trip_id"}, {"user id","userid","user_id"})
-
-    # demo: user_id, age
-    lower = {c.lower().strip(): c for c in demo.columns}
-    ucol = next((lower[k] for k in ["user id","userid","user_id"] if k in lower), demo.columns[0])
-    acol = next((c for c in demo.columns if "age" in c.lower()), demo.columns[-1])
-    demo = demo.rename(columns={ucol:"user_id", acol:"age"})
-
-    return trips, riders, demo
-
-def write_tables(trips, riders, demo):
+def write_tables(trips, riders):
     trips.to_sql("trips", engine, if_exists="replace", index=False)
     riders.to_sql("riders", engine, if_exists="replace", index=False)
-    demo.to_sql("ride_demo", engine, if_exists="replace", index=False)
+    # if demo is not None:
+    #     demo.to_sql("ride_demo", engine, if_exists="replace", index=False)
+
     with engine.begin() as conn:
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_riders_trip ON riders(trip_id);"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_demo_user ON ride_demo(user_id);"))
+        if riders is not None:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_riders_trip ON riders(trip_id);"))
+        # if demo is not None:
+        #     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_demo_user ON ride_demo(user_id);"))
 
 if __name__ == "__main__":
-    t, r, d = load_frames()
-    write_tables(t, r, d)
-    print("Loaded tables: trips, riders, ride_demo")
+    t, r = load_frames()
+    write_tables(t, r)
+    written = ["trips"]
+    if r is not None: written.append("riders")
+    # if d is not None: written.append("ride_demo")
+    print(f"Loaded tables: {', '.join(written)}")
