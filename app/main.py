@@ -149,13 +149,13 @@ with st.expander("✨ Try an example"):
     ]
     if c1.button("Example 1"):
         st.session_state.example_q = examples[0]
-        st.experimental_rerun()
+        st.rerun()
     if c2.button("Example 2"):
         st.session_state.example_q = examples[1]
-        st.experimental_rerun()
+        st.rerun()
     if c3.button("Example 3"):
         st.session_state.example_q = examples[2]
-        st.experimental_rerun()
+        st.rerun()
 
 prefill = st.session_state.get("example_q", "")
 
