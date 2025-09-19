@@ -66,6 +66,7 @@ def make_agent(llm: ChatGoogleGenerativeAI, db: SQLDatabase):
         db=db,
         verbose=True,
         system_message=SYSTEM_PROMPT,
+        return_intermediate_steps=True,  # capture SQL/tool traces
     )
 
 
@@ -108,7 +109,15 @@ llm = get_llm(MODEL_ID, GOOGLE_API_KEY)
 db = get_db(DATABASE_URL)
 agent = make_agent(llm, db)
 
+# ---------------------------
+# Session state (init early)
+# ---------------------------
+if "history" not in st.session_state:
+    st.session_state.history = []  # list of {"q": str, "a": str, "trace": any}
+
+# ---------------------------
 # Sidebar health + tips
+# ---------------------------
 with st.sidebar:
     st.subheader("Status")
     ok = health_check(db)
@@ -125,9 +134,6 @@ with st.sidebar:
 # ---------------------------
 # Conversation history
 # ---------------------------
-if "history" not in st.session_state:
-    st.session_state.history = []  # list of {"q": str, "a": str, "trace": any}
-
 st.subheader("Conversation")
 for i, item in enumerate(st.session_state.history, 1):
     st.markdown(f"**Q{i}:** {item['q']}")
@@ -138,26 +144,14 @@ for i, item in enumerate(st.session_state.history, 1):
     st.divider()
 
 # ---------------------------
-# Quick examples (optional)
+# Example questions (printed)
 # ---------------------------
-with st.expander("✨ Try an example"):
-    c1, c2, c3 = st.columns(3)
-    examples = [
-        "How many trips were completed last week?",
-        "Top 3 dropoff_address for riders aged 21–25 on Saturdays",
-        "When do large groups (6+ riders) usually travel downtown?",
-    ]
-    if c1.button("Example 1"):
-        st.session_state.example_q = examples[0]
-        st.rerun()
-    if c2.button("Example 2"):
-        st.session_state.example_q = examples[1]
-        st.rerun()
-    if c3.button("Example 3"):
-        st.session_state.example_q = examples[2]
-        st.rerun()
-
-prefill = st.session_state.get("example_q", "")
+st.markdown("✨ **Try asking questions like:**")
+st.markdown(
+    "- How many trips were completed last week?\n"
+    "- Top 3 dropoff_address for riders aged 21–25 on Saturdays\n"
+    "- When do large groups (6+ riders) usually travel downtown?"
+)
 
 # ---------------------------
 # New question form
@@ -166,13 +160,8 @@ with st.form("ask_form", clear_on_submit=True):
     user_q = st.text_input(
         "Ask a data question (e.g., 'Top 10 dropoff_address for riders aged 18–24 on Saturdays?')",
         key=f"q_{len(st.session_state.history)}",
-        value=prefill,
     )
     submitted = st.form_submit_button("🔎 Ask", type="primary")
-
-# Clear the prefill after rendering the form once
-if "example_q" in st.session_state:
-    del st.session_state["example_q"]
 
 if submitted and user_q:
     try:
@@ -180,9 +169,7 @@ if submitted and user_q:
             # IMPORTANT: non-streaming for broad model compatibility
             res = agent.invoke({"input": user_q}, config={"stream": False})
             answer = res.get("output", str(res))
-
-            # Collect any useful trace info for optional display
-            trace = res.get("intermediate_steps") or res
+            trace = res.get("intermediate_steps") or res  # store any trace/info
 
         st.session_state.history.append({"q": user_q, "a": answer, "trace": trace})
         st.rerun()
